@@ -11,14 +11,15 @@ import (
 
 type Consumer struct {
 	client     *redis.Client
-	queue      *Queue
-	group      string
-	consumer   string
-	tag        string
-	ctx        map[string]interface{}
-	mu         sync.Mutex
-	wg         sync.WaitGroup
-	processing func(Message, string, map[string]interface{}) error
+	queue      *Queue                                              // 队列
+	group      string                                              // 消费组
+	consumer   string                                              // 消费者
+	tag        string                                              // 消费者标签
+	ctx        map[string]interface{}                              // 消费者关联信息上下文
+	mu         sync.Mutex                                          // 互斥锁
+	wg         sync.WaitGroup                                      // 等待组
+	processing func(Message, string, map[string]interface{}) error // 处理消息的函数
+	openScan   bool                                                // 定期扫描过期消息(兜底行为)
 }
 
 func NewConsumer(client *redis.Client, queue *Queue, group, consumer, tag string, ctx map[string]interface{}, processing func(Message, string, map[string]interface{}) error) *Consumer {
@@ -137,7 +138,7 @@ func (c *Consumer) handleFailure(ctx context.Context, msg Message, id string, er
 
 	for _, pending := range pendingResult {
 		if pending.ID == id && pending.RetryCount >= c.queue.RetryCount {
-			if err := c.sendToDeadLetterStream(ctx, msg, id); err != nil {
+			if err := c.sendToDeadLetterQueue(ctx, msg, id); err != nil {
 				log.Error().Err(err).Msgf("Failed to send message to dead letter stream: %v", err)
 				return err
 			}
@@ -163,8 +164,8 @@ func (c *Consumer) getPendingResult(ctx context.Context, id string) ([]redis.XPe
 	}).Result()
 }
 
-func (c *Consumer) sendToDeadLetterStream(ctx context.Context, msg Message, id string) error {
-	deadLetterStreamKey := buildStreamKey(c.queue.DeadLetterStream)
+func (c *Consumer) sendToDeadLetterQueue(ctx context.Context, msg Message, id string) error {
+	deadLetterStreamKey := buildDeadLetterKey(c.queue.DeadLetterName)
 
 	log.Debug().Msgf("Message %s has reached max retry count", id)
 
@@ -275,6 +276,10 @@ func (c *Consumer) processStream(ctx context.Context, stream redis.XStream) {
 }
 
 func (c *Consumer) Consume(ctx context.Context) error {
+	if err := c.checkConsumerLimit(ctx); err != nil {
+		return err
+	}
+
 	for {
 		remaining, err := c.checkActiveWorkers(ctx)
 		if err != nil {
@@ -296,4 +301,30 @@ func (c *Consumer) Consume(ctx context.Context) error {
 	}
 }
 
-// TODO：定期扫描未确认的消息，重试或者发送到死信队列
+func (c *Consumer) checkConsumerLimit(ctx context.Context) error {
+	maxConsumerNum := c.queue.MaxConsumers
+
+	currentConsumers, err := c.getCurrentConsumers(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get current consumers")
+		return err
+	}
+	if currentConsumers >= maxConsumerNum {
+		err = errors.New("the number of consumers has reached the maximum limit")
+		log.Error().Err(err).Msg("Failed to start consumer: maximum number of consumers reached")
+		return err
+	}
+	return nil
+}
+
+func (c *Consumer) getCurrentConsumers(ctx context.Context) (int64, error) {
+	consumers, err := c.client.XInfoConsumers(ctx, buildStreamKey(c.queue.Name), c.group).Result()
+	if err != nil {
+		return 0, err
+	}
+	return int64(len(consumers)), nil
+}
+
+// TODO：定期扫描>规定时间且未确认的消息，重试，如果>最大重试次数，发送到死信队列
+
+// TODO: 暂停消费或者注销消费者
