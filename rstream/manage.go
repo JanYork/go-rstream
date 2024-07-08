@@ -40,12 +40,12 @@ func (m *Manager) CreateQueue(ctx context.Context, queue *Queue) (*GroupManager,
 		}
 	}
 
-	deadLetterKey := buildStreamKey(queue.DeadLetterStream)
+	deadLetterKey := buildDeadLetterKey(queue.DeadLetterName)
 
 	exists, err = m.client.Exists(ctx, deadLetterKey).Result()
 	if err != nil {
 		m.client.Del(ctx, streamKey)
-		log.Error().Err(err).Msgf("Failed to check if dead letter stream %s exists", queue.DeadLetterStream)
+		log.Error().Err(err).Msgf("Failed to check if dead letter stream %s exists", deadLetterKey)
 		return nil, nil, err
 	}
 
@@ -61,17 +61,17 @@ func (m *Manager) CreateQueue(ctx context.Context, queue *Queue) (*GroupManager,
 	}
 
 	metadata := map[string]interface{}{
-		"name":               queue.Name,
-		"fifo":               queue.FIFO,
-		"default_group":      queue.DefaultGroup,
-		"block_time":         queue.BlockTime,
-		"retry_count":        queue.RetryCount,
-		"dead_letter_stream": queue.DeadLetterStream,
-		"long_polling_time":  queue.LongPollingTime,
-		"max_length":         queue.MaxLength,
-		"max_consumers":      queue.MaxConsumers,
-		"max_groups":         queue.MaxGroups,
-		"max_concurrency":    queue.MaxConcurrency,
+		"name":              queue.Name,
+		"fifo":              queue.FIFO,
+		"default_group":     queue.DefaultGroup,
+		"block_time":        queue.BlockTime,
+		"retry_count":       queue.RetryCount,
+		"dead_letter_name":  queue.DeadLetterName,
+		"long_polling_time": queue.LongPollingTime,
+		"max_length":        queue.MaxLength,
+		"max_consumers":     queue.MaxConsumers,
+		"max_groups":        queue.MaxGroups,
+		"max_concurrency":   queue.MaxConcurrency,
 	}
 
 	metadataJSON, err := json.Marshal(metadata)
@@ -119,7 +119,9 @@ func buildKeys(name string) (string, string) {
 	return metaKey, streamKey
 }
 
-// TODO:死信队列额外
+func buildDeadLetterKey(name string) string {
+	return keyPrefix + name + ":dead_letter"
+}
 
 func buildStreamKey(name string) string {
 	return keyPrefix + name
