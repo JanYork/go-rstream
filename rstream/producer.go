@@ -8,15 +8,13 @@ import (
 
 // Producer represents a message producer
 type Producer struct {
-	client *redis.Client
-	queue  *Queue
+	queue *Queue
 }
 
 // NewProducer creates a new Producer
-func NewProducer(client *redis.Client, queue *Queue) *Producer {
+func NewProducer(queue *Queue) *Producer {
 	return &Producer{
-		client: client,
-		queue:  queue,
+		queue: queue,
 	}
 }
 
@@ -24,7 +22,7 @@ func NewProducer(client *redis.Client, queue *Queue) *Producer {
 func (p *Producer) Publish(ctx context.Context, message Message) error {
 	streamKey := buildStreamKey(p.queue.Name)
 
-	_, err := p.client.XAdd(ctx, &redis.XAddArgs{
+	_, err := p.queue.Client.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
 		Values: message.Map(),
 	}).Result()
