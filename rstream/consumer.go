@@ -10,27 +10,32 @@ import (
 )
 
 type Consumer struct {
-	client     *redis.Client
-	queue      *Queue                                              // 队列
-	group      string                                              // 消费组
-	consumer   string                                              // 消费者
-	tag        string                                              // 消费者标签
-	ctx        map[string]interface{}                              // 消费者关联信息上下文
-	mu         sync.Mutex                                          // 互斥锁
-	wg         sync.WaitGroup                                      // 等待组
-	processing func(Message, string, map[string]interface{}) error // 处理消息的函数
-	openScan   bool                                                // 定期扫描过期消息(兜底行为)
+	client      *redis.Client
+	queue       *Queue                                              // 队列
+	group       string                                              // 消费组
+	consumer    string                                              // 消费者
+	tag         string                                              // 消费者标签
+	ctx         map[string]interface{}                              // 消费者关联信息上下文
+	mu          sync.Mutex                                          // 互斥锁
+	wg          sync.WaitGroup                                      // 等待组
+	processing  func(Message, string, map[string]interface{}) error // 处理消息的函数
+	currentWait time.Duration                                       // 获取消息等待时间
+	paused      bool                                                // 暂停标志
+	stop        bool                                                // 停止标志
 }
 
 func NewConsumer(client *redis.Client, queue *Queue, group, consumer, tag string, ctx map[string]interface{}, processing func(Message, string, map[string]interface{}) error) *Consumer {
 	return &Consumer{
-		client:     client,
-		queue:      queue,
-		group:      group,
-		consumer:   consumer,
-		tag:        tag,
-		ctx:        ctx,
-		processing: processing,
+		client:      client,
+		queue:       queue,
+		group:       group,
+		consumer:    consumer,
+		tag:         tag,
+		ctx:         ctx,
+		processing:  processing,
+		currentWait: 0,
+		paused:      false,
+		stop:        false,
 	}
 }
 
@@ -165,7 +170,7 @@ func (c *Consumer) getPendingResult(ctx context.Context, id string) ([]redis.XPe
 }
 
 func (c *Consumer) sendToDeadLetterQueue(ctx context.Context, msg Message, id string) error {
-	deadLetterStreamKey := buildDeadLetterKey(c.queue.DeadLetterName)
+	deadLetterStreamKey := buildDeadLetterKey(c.queue.DeadLetterName, c.group)
 
 	log.Debug().Msgf("Message %s has reached max retry count", id)
 
@@ -228,16 +233,24 @@ func (c *Consumer) retryMessage(ctx context.Context, id string) error {
 
 func (c *Consumer) checkActiveWorkers(ctx context.Context) (int64, error) {
 	activeWorkers, err := c.getActiveWorkers(ctx)
+
+	uwt := func(t time.Duration) {
+		maxWait := 3 * time.Second
+		if t < maxWait {
+			c.currentWait += t
+		}
+	}
+
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get active workers")
-		time.Sleep(1 * time.Second)
+		c.currentWait = 1 * time.Second
 		return 0, err
 	}
 
 	if c.queue.FIFO {
 		if activeWorkers >= 1 {
-			time.Sleep(100 * time.Millisecond)
 			log.Debug().Msg("FIFO queue has active workers")
+			uwt(300 * time.Millisecond)
 			return 0, nil
 		}
 
@@ -245,12 +258,14 @@ func (c *Consumer) checkActiveWorkers(ctx context.Context) (int64, error) {
 	}
 
 	if activeWorkers >= c.queue.MaxConcurrency {
-		// TODO: 指数增长
-		time.Sleep(1 * time.Second)
 		log.Debug().Msg("Max concurrency reached")
+		uwt(300 * time.Millisecond)
 		return 0, nil
 	}
 
+	if c.currentWait > 0 {
+		c.currentWait = 0
+	}
 	return c.queue.MaxConcurrency - activeWorkers, nil
 }
 
@@ -277,20 +292,40 @@ func (c *Consumer) processStream(ctx context.Context, stream redis.XStream) {
 
 func (c *Consumer) Consume(ctx context.Context) error {
 	if err := c.checkConsumerLimit(ctx); err != nil {
+		log.Error().Err(err).Msg("Failed to start consumer")
 		return err
 	}
 
 	for {
+		c.mu.Lock()
+		if c.stop {
+			c.mu.Unlock()
+			break
+		}
+		paused := c.paused
+		c.mu.Unlock()
+
+		if paused {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+
 		remaining, err := c.checkActiveWorkers(ctx)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to check active workers")
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(c.currentWait)
+			continue
+		}
+
+		if remaining == 0 {
+			time.Sleep(c.currentWait)
 			continue
 		}
 
 		messages, err := c.fetchMessages(ctx, remaining)
 
 		if err != nil && !errors.Is(err, redis.Nil) {
+			log.Error().Err(err).Msg("Failed to fetch messages")
 			return err
 		}
 
@@ -299,6 +334,79 @@ func (c *Consumer) Consume(ctx context.Context) error {
 			c.processStream(ctx, stream)
 		}
 	}
+
+	log.Info().Msgf("Consumer %s stopped", c.consumer)
+	return nil
+}
+
+func (c *Consumer) Pause() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.paused = true
+}
+
+func (c *Consumer) Resume() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.paused = false
+}
+
+func (c *Consumer) Stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stop = true
+}
+
+func (c *Consumer) Shutdown(ctx context.Context) error {
+	c.Stop()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// 注销消费者，将pending消息放入死信队列并ACK
+	pendingMsgs, err := c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
+		Stream: buildStreamKey(c.queue.Name),
+		Group:  c.group,
+		Start:  "-",
+		End:    "+",
+		Count:  10,
+	}).Result()
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to get pending messages during shutdown")
+		return err
+	}
+
+	for _, pmsg := range pendingMsgs {
+		// 获取消息的详细内容
+		msgDetails, err := c.client.XRange(ctx, buildStreamKey(c.queue.Name), pmsg.ID, pmsg.ID).Result()
+		if err != nil {
+			log.Error().Err(err).Msgf("Failed to get message details for %s during shutdown", pmsg.ID)
+			continue
+		}
+
+		// 确保只获取一条消息
+		if len(msgDetails) != 1 {
+			log.Error().Err(err).Msgf("Unexpected number of messages returned for %s during shutdown", pmsg.ID)
+			continue
+		}
+
+		// 解析消息
+		msg, id, err := c.parseMessage(msgDetails[0])
+		if err != nil {
+			log.Error().Err(err).Msgf("Failed to parse pending message %s", pmsg.ID)
+			continue
+		}
+
+		if err := c.sendToDeadLetterQueue(ctx, msg, id); err != nil {
+			log.Error().Err(err).Msgf("Failed to send message %s to dead letter queue", id)
+			continue
+		}
+
+		if _, err := c.client.XAck(ctx, buildStreamKey(c.queue.Name), c.group, id).Result(); err != nil {
+			log.Error().Err(err).Msgf("Failed to acknowledge message %s during shutdown", id)
+		}
+	}
+	return nil
 }
 
 func (c *Consumer) checkConsumerLimit(ctx context.Context) error {
@@ -324,7 +432,3 @@ func (c *Consumer) getCurrentConsumers(ctx context.Context) (int64, error) {
 	}
 	return int64(len(consumers)), nil
 }
-
-// TODO：定期扫描>规定时间且未确认的消息，重试，如果>最大重试次数，发送到死信队列
-
-// TODO: 暂停消费或者注销消费者
