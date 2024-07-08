@@ -9,18 +9,18 @@ import (
 )
 
 type Queue struct {
-	Client           *redis.Client
-	Name             string        // 队列名称
-	DefaultGroup     string        // 默认消费组
-	BlockTime        time.Duration // 阻塞时间(超时时间)
-	FIFO             bool          // 顺序消费
-	RetryCount       int64         // 重试次数
-	DeadLetterStream string        // 死信队列
-	LongPollingTime  time.Duration // 长轮训时间
-	MaxLength        int64         // 最大长度
-	MaxConsumers     int64         // 最大消费者数
-	MaxGroups        int64         // 最大消费组数
-	MaxConcurrency   int64         // 最大并发数(异步可用)
+	Client          *redis.Client
+	Name            string        // 队列名称
+	DefaultGroup    string        // 默认消费组
+	BlockTime       time.Duration // 阻塞时间(超时时间)
+	FIFO            bool          // 顺序消费
+	RetryCount      int64         // 重试次数
+	DeadLetterName  string        // 死信队列
+	LongPollingTime time.Duration // 长轮训时间
+	MaxLength       int64         // 最大长度
+	MaxConsumers    int64         // 最大消费者数
+	MaxGroups       int64         // 最大消费组数
+	MaxConcurrency  int64         // 最大并发数(异步可用)
 }
 
 func NewQueue(client *redis.Client, name string) *Queue {
