@@ -3,7 +3,7 @@ package rstream
 import (
 	"context"
 	"errors"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"sync"
 	"time"
@@ -123,7 +123,8 @@ func (c *Consumer) processMessage(ctx context.Context, msg Message, id string) e
 		if err != nil {
 			log.Error().Err(err).Msgf("Failed to acknowledge message %s", msg.ID)
 		}
-		log.Error().Err(err).Msgf("Message %s processed successfully", msg.ID)
+
+		log.Debug().Msgf("Message %s processed successfully", msg.ID)
 	case <-ctxWithTimeout.Done():
 		log.Error().Err(ctxWithTimeout.Err()).Msgf("Message %s processing timed out", msg.ID)
 		return c.handleFailure(ctx, msg, id, ctxWithTimeout.Err())

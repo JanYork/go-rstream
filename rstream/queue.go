@@ -3,7 +3,7 @@ package rstream
 import (
 	"context"
 	"encoding/json"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -29,6 +29,8 @@ func NewQueue(client *redis.Client, name string) *Queue {
 		Name:   name,
 	}
 }
+
+// TODO 裁切
 
 func (q *Queue) SyncQueue(ctx context.Context, queue *Queue) error {
 	log.Debug().Msgf("Syncing queue %s", q.Name)

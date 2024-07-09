@@ -3,7 +3,7 @@ package rstream
 import (
 	"context"
 	"errors"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -36,6 +36,7 @@ func (g *GroupManager) CreateGroup(ctx context.Context, groupName string, start 
 
 	// Check if it meets the queue configuration rules
 	if err := g.checkMaxGroups(ctx, stream); err != nil {
+		log.Error().Err(err).Msg("Failed to create group: maximum number of consumer groups reached")
 		return err
 	}
 
@@ -126,7 +127,16 @@ func (g *GroupManager) DestroyGroup(ctx context.Context, groupName string) (int6
 }
 
 func (g *GroupManager) checkMaxGroups(ctx context.Context, stream string) error {
-	groups, err := g.queue.Client.XInfoGroups(ctx, stream).Result()
+	exists, err := g.queue.Client.Exists(ctx, stream).Result()
+	if err != nil {
+		log.Error().Err(err).Msgf("Failed to check if stream %s exists", stream)
+		return err
+	}
+	if exists == 0 {
+		return nil
+	}
+	infoGroups := g.queue.Client.XInfoGroups(ctx, stream)
+	groups, err := infoGroups.Result()
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to get groups for stream %s", stream)
 		return err
