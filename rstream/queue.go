@@ -33,7 +33,7 @@ func NewQueue(client *redis.Client, name string) *Queue {
 func (q *Queue) SyncQueue(ctx context.Context, queue *Queue) error {
 	log.Debug().Msgf("Syncing queue %s", q.Name)
 
-	metaKey := buildMetaKey(q.Name)
+	metaKey := buildQueueMetaKey(q.Name)
 
 	meta, err := q.Client.Get(ctx, metaKey).Result()
 	if err != nil {

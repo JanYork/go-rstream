@@ -30,7 +30,7 @@ func (g *GroupManager) SwitchDestroyMovePending() {
 
 // CreateGroup Creates a consumer group if it does not already exist
 func (g *GroupManager) CreateGroup(ctx context.Context, groupName string, start string) error {
-	stream := buildStreamKey(g.queue.Name)
+	stream := buildQueueKey(g.queue.Name)
 
 	log.Debug().Msgf("Creating groupName %s, start: %s, stream: %s", groupName, start, stream)
 
@@ -67,7 +67,7 @@ func (g *GroupManager) CreateGroup(ctx context.Context, groupName string, start 
 
 // CreateDeadLetterGroup Creates a dead letter consumer group if it does not already exist
 func (g *GroupManager) CreateDeadLetterGroup(ctx context.Context, groupName string) error {
-	stream := buildStreamKey(g.queue.DeadLetterName)
+	stream := buildQueueKey(g.queue.DeadLetterName)
 	group := &Group{
 		Name:      groupName,
 		Queue:     g.queue,
@@ -149,7 +149,7 @@ type Group struct {
 
 // Destroy Removes the consumer group, optionally moving pending messages to the dead letter queue
 func (g *Group) Destroy(ctx context.Context, movePending bool) (int64, int64, string, error) {
-	streamKey := buildStreamKey(g.Queue.Name)
+	streamKey := buildQueueKey(g.Queue.Name)
 
 	log.Debug().Msgf("Removing groupName %s, stream: %s", g.Name, streamKey)
 
@@ -193,7 +193,7 @@ func (g *Group) Destroy(ctx context.Context, movePending bool) (int64, int64, st
 }
 
 func (g *Group) getGroupNextOffset(ctx context.Context) (string, error) {
-	groupInfoList, err := g.Queue.Client.XInfoGroups(ctx, buildStreamKey(g.Queue.Name)).Result()
+	groupInfoList, err := g.Queue.Client.XInfoGroups(ctx, buildQueueKey(g.Queue.Name)).Result()
 	if err != nil {
 		return "", err
 	}
@@ -208,7 +208,7 @@ func (g *Group) getGroupNextOffset(ctx context.Context) (string, error) {
 }
 
 func (g *Group) movePendingMessagesToDeadLetter(ctx context.Context, count int64) error {
-	streamKey := buildStreamKey(g.Queue.Name)
+	streamKey := buildQueueKey(g.Queue.Name)
 	pendingMsgs, err := g.Queue.Client.XPendingExt(ctx, &redis.XPendingExtArgs{
 		Stream: streamKey,
 		Group:  g.Name,
@@ -232,7 +232,7 @@ func (g *Group) movePendingMessagesToDeadLetter(ctx context.Context, count int64
 }
 
 func (g *Group) moveMessageToDeadLetter(ctx context.Context, msgID string) error {
-	streamKey := buildStreamKey(g.Queue.Name)
+	streamKey := buildQueueKey(g.Queue.Name)
 	msgDetails, err := g.Queue.Client.XRange(ctx, streamKey, msgID, msgID).Result()
 	if err != nil {
 		logError("Failed to get message details for %s", msgID, err)
@@ -244,7 +244,7 @@ func (g *Group) moveMessageToDeadLetter(ctx context.Context, msgID string) error
 	}
 
 	_, err = g.Queue.Client.XAdd(ctx, &redis.XAddArgs{
-		Stream: buildDeadLetterKey(g.Queue.DeadLetterName, g.Name),
+		Stream: buildDeadLetterQueueKey(g.Queue.DeadLetterName, g.Name),
 		Values: msgDetails[0].Values,
 	}).Result()
 	if err != nil {
@@ -267,7 +267,7 @@ func logError(message, group string, err error) {
 
 // RunScanPendingMessages Pending messages are scanned on a regular basis to transfer messages that have timed out but are not processed to a dead-letter queue
 func (g *Group) RunScanPendingMessages(ctx context.Context) error {
-	streamKey := buildStreamKey(g.Queue.Name)
+	streamKey := buildQueueKey(g.Queue.Name)
 	blockTime := g.Queue.BlockTime
 	thresholdTime := blockTime + 30*time.Second
 

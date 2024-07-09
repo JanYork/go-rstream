@@ -75,7 +75,7 @@ var errInvalidMessage = errors.New("invalid message format")
 
 func (c *Consumer) getActiveWorkers(ctx context.Context) (int64, error) {
 	// 使用 XPENDING 命令获取挂起消息信息
-	pendingInfo, err := c.client.XPending(ctx, buildStreamKey(c.queue.Name), c.group).Result()
+	pendingInfo, err := c.client.XPending(ctx, buildQueueKey(c.queue.Name), c.group).Result()
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to get pending messages in getActiveWorkers function")
 		return 0, err
@@ -89,7 +89,7 @@ func (c *Consumer) fetchMessages(ctx context.Context, count int64) ([]redis.XStr
 	return c.client.XReadGroup(ctx, &redis.XReadGroupArgs{
 		Group:    c.group,
 		Consumer: c.consumer,
-		Streams:  []string{buildStreamKey(c.queue.Name), ">"},
+		Streams:  []string{buildQueueKey(c.queue.Name), ">"},
 		Count:    count,
 		Block:    c.queue.LongPollingTime,
 	}).Result()
@@ -119,7 +119,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg Message, id string) e
 			return c.handleFailure(ctx, msg, id, err)
 		}
 
-		_, err = c.client.XAck(ctx, buildStreamKey(c.queue.Name), c.group, id).Result()
+		_, err = c.client.XAck(ctx, buildQueueKey(c.queue.Name), c.group, id).Result()
 		if err != nil {
 			log.Error().Err(err).Msgf("Failed to acknowledge message %s", msg.ID)
 		}
@@ -160,7 +160,7 @@ func (c *Consumer) handleFailure(ctx context.Context, msg Message, id string, er
 
 func (c *Consumer) getPendingResult(ctx context.Context, id string) ([]redis.XPendingExt, error) {
 	return c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream:   buildStreamKey(c.queue.Name),
+		Stream:   buildQueueKey(c.queue.Name),
 		Group:    c.group,
 		Start:    id,
 		End:      id,
@@ -170,7 +170,7 @@ func (c *Consumer) getPendingResult(ctx context.Context, id string) ([]redis.XPe
 }
 
 func (c *Consumer) sendToDeadLetterQueue(ctx context.Context, msg Message, id string) error {
-	deadLetterStreamKey := buildDeadLetterKey(c.queue.DeadLetterName, c.group)
+	deadLetterStreamKey := buildDeadLetterQueueKey(c.queue.DeadLetterName, c.group)
 
 	log.Debug().Msgf("Message %s has reached max retry count", id)
 
@@ -185,7 +185,7 @@ func (c *Consumer) sendToDeadLetterQueue(ctx context.Context, msg Message, id st
 
 	log.Info().Msgf("Message %s sent to dead letter stream", id)
 
-	_, err = c.client.XAck(ctx, buildStreamKey(c.queue.Name), c.group, id).Result()
+	_, err = c.client.XAck(ctx, buildQueueKey(c.queue.Name), c.group, id).Result()
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to acknowledge message %s", id)
 		return err
@@ -197,7 +197,7 @@ func (c *Consumer) sendToDeadLetterQueue(ctx context.Context, msg Message, id st
 func (c *Consumer) retryMessage(ctx context.Context, id string) error {
 	log.Debug().Msgf("Retrying message %s", id)
 	claimResult, err := c.client.XClaim(ctx, &redis.XClaimArgs{
-		Stream:   buildStreamKey(c.queue.Name),
+		Stream:   buildQueueKey(c.queue.Name),
 		Group:    c.group,
 		Consumer: c.consumer,
 		MinIdle:  0,
@@ -365,7 +365,7 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
 
 	// 注销消费者，将pending消息放入死信队列并ACK
 	pendingMsgs, err := c.client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: buildStreamKey(c.queue.Name),
+		Stream: buildQueueKey(c.queue.Name),
 		Group:  c.group,
 		Start:  "-",
 		End:    "+",
@@ -378,7 +378,7 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
 
 	for _, pmsg := range pendingMsgs {
 		// 获取消息的详细内容
-		msgDetails, err := c.client.XRange(ctx, buildStreamKey(c.queue.Name), pmsg.ID, pmsg.ID).Result()
+		msgDetails, err := c.client.XRange(ctx, buildQueueKey(c.queue.Name), pmsg.ID, pmsg.ID).Result()
 		if err != nil {
 			log.Error().Err(err).Msgf("Failed to get message details for %s during shutdown", pmsg.ID)
 			continue
@@ -402,7 +402,7 @@ func (c *Consumer) Shutdown(ctx context.Context) error {
 			continue
 		}
 
-		if _, err := c.client.XAck(ctx, buildStreamKey(c.queue.Name), c.group, id).Result(); err != nil {
+		if _, err := c.client.XAck(ctx, buildQueueKey(c.queue.Name), c.group, id).Result(); err != nil {
 			log.Error().Err(err).Msgf("Failed to acknowledge message %s during shutdown", id)
 		}
 	}
@@ -426,7 +426,7 @@ func (c *Consumer) checkConsumerLimit(ctx context.Context) error {
 }
 
 func (c *Consumer) getCurrentConsumers(ctx context.Context) (int64, error) {
-	consumers, err := c.client.XInfoConsumers(ctx, buildStreamKey(c.queue.Name), c.group).Result()
+	consumers, err := c.client.XInfoConsumers(ctx, buildQueueKey(c.queue.Name), c.group).Result()
 	if err != nil {
 		return 0, err
 	}

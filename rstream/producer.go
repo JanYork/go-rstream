@@ -20,7 +20,7 @@ func NewProducer(queue *Queue) *Producer {
 
 // Publish publishes a message to the stream
 func (p *Producer) Publish(ctx context.Context, message Message) error {
-	streamKey := buildStreamKey(p.queue.Name)
+	streamKey := buildQueueKey(p.queue.Name)
 
 	_, err := p.queue.Client.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,

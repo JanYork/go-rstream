@@ -29,33 +29,13 @@ func (m *Manager) CreateQueue(ctx context.Context, queue *Queue) (*GroupManager,
 		return nil, nil, err
 	}
 
-	var groupManager = NewGroupManager(m.client, queue)
+	var groupManager = NewGroupManager(queue)
 
 	if exists == 0 {
-		err = groupManager.CreateGroup(ctx, queue.DefaultGroup, "")
+		err = groupManager.CreateGroupWithDeadLetter(ctx, queue.DefaultGroup, "")
 
 		if err != nil {
 			log.Error().Err(err).Msgf("Failed to create default group for queue %s", queue.Name)
-			return nil, nil, err
-		}
-	}
-
-	deadLetterKey := buildDeadLetterKey(queue.DeadLetterName)
-
-	exists, err = m.client.Exists(ctx, deadLetterKey).Result()
-	if err != nil {
-		m.client.Del(ctx, streamKey)
-		log.Error().Err(err).Msgf("Failed to check if dead letter stream %s exists", deadLetterKey)
-		return nil, nil, err
-	}
-
-	if exists == 0 {
-		// 如果死信队列不存在，创建死信队列
-		err = groupManager.CreateDeadLetterGroup(ctx, queue.DefaultGroup, "")
-
-		if err != nil {
-			m.client.Del(ctx, streamKey)
-			log.Error().Err(err).Msgf("Failed to create dead letter group for queue %s", queue.Name)
 			return nil, nil, err
 		}
 	}
@@ -77,7 +57,7 @@ func (m *Manager) CreateQueue(ctx context.Context, queue *Queue) (*GroupManager,
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		m.client.Del(ctx, streamKey)
-		m.client.Del(ctx, deadLetterKey)
+		m.client.Del(ctx, buildDeadLetterQueueKey(queue.DeadLetterName, queue.DefaultGroup))
 		log.Error().Err(err).Msgf("Failed to marshal metadata for queue %s", queue.Name)
 		return nil, nil, err
 	}
@@ -119,14 +99,14 @@ func buildKeys(name string) (string, string) {
 	return metaKey, streamKey
 }
 
-func buildDeadLetterKey(name string) string {
-	return keyPrefix + name + ":dead_letter"
+func buildDeadLetterQueueKey(name string, group string) string {
+	return keyPrefix + name + ":" + group + ":dead_letter"
 }
 
-func buildStreamKey(name string) string {
+func buildQueueKey(name string) string {
 	return keyPrefix + name
 }
 
-func buildMetaKey(name string) string {
+func buildQueueMetaKey(name string) string {
 	return keyPrefix + name + ":meta"
 }

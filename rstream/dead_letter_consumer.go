@@ -88,7 +88,7 @@ func (d *DeadLetterConsumer) processMessageInGoroutine(ctx context.Context, sem 
 }
 
 func (d *DeadLetterConsumer) fetchMessages(ctx context.Context, count int64) ([]redis.XMessage, error) {
-	stream := buildDeadLetterKey(d.queue.DeadLetterName, "")
+	stream := buildDeadLetterQueueKey(d.queue.DeadLetterName, "")
 	result, err := d.client.XRead(ctx, &redis.XReadArgs{
 		Streams: []string{stream, "0"},
 		Count:   count,
@@ -127,7 +127,7 @@ func (d *DeadLetterConsumer) processMessage(ctx context.Context, msg Message, st
 			return d.handleFailure(ctx, msg, streamID, err)
 		}
 
-		_, err = d.client.XDel(ctx, buildDeadLetterKey(d.queue.DeadLetterName, ""), streamID).Result()
+		_, err = d.client.XDel(ctx, buildDeadLetterQueueKey(d.queue.DeadLetterName, ""), streamID).Result()
 		if err != nil {
 			log.Error().Err(err).Msgf("Failed to delete message %s", streamID)
 		}
@@ -152,7 +152,7 @@ func (d *DeadLetterConsumer) handleFailure(ctx context.Context, msg Message, id 
 	for _, pending := range pendingResult {
 		if pending.ID == id && pending.RetryCount >= d.retryCount {
 			if d.finalFailurePattern == AbandonPattern {
-				return d.acknowledgeAndWarn(ctx, msg, id)
+				return d.acknowledgeAndWarn(ctx, id)
 			}
 			return d.requeueMessage(ctx, msg, id)
 		}
@@ -163,7 +163,7 @@ func (d *DeadLetterConsumer) handleFailure(ctx context.Context, msg Message, id 
 
 func (d *DeadLetterConsumer) getPendingResult(ctx context.Context, id string) ([]redis.XPendingExt, error) {
 	return d.client.XPendingExt(ctx, &redis.XPendingExtArgs{
-		Stream: buildDeadLetterKey(d.queue.DeadLetterName, ""),
+		Stream: buildDeadLetterQueueKey(d.queue.DeadLetterName, ""),
 		Start:  id,
 		End:    id,
 		Count:  1,
@@ -172,7 +172,7 @@ func (d *DeadLetterConsumer) getPendingResult(ctx context.Context, id string) ([
 
 func (d *DeadLetterConsumer) requeueMessage(ctx context.Context, msg Message, id string) error {
 	_, err := d.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: buildDeadLetterKey(d.queue.DeadLetterName, ""),
+		Stream: buildDeadLetterQueueKey(d.queue.DeadLetterName, ""),
 		Values: msg.Map(),
 	}).Result()
 	if err != nil {
@@ -180,7 +180,7 @@ func (d *DeadLetterConsumer) requeueMessage(ctx context.Context, msg Message, id
 		return err
 	}
 
-	_, err = d.client.XDel(ctx, buildDeadLetterKey(d.queue.DeadLetterName, ""), id).Result()
+	_, err = d.client.XDel(ctx, buildDeadLetterQueueKey(d.queue.DeadLetterName, ""), id).Result()
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to delete message %s after requeue", id)
 		return err
@@ -190,8 +190,8 @@ func (d *DeadLetterConsumer) requeueMessage(ctx context.Context, msg Message, id
 	return nil
 }
 
-func (d *DeadLetterConsumer) acknowledgeAndWarn(ctx context.Context, msg Message, id string) error {
-	_, err := d.client.XDel(ctx, buildDeadLetterKey(d.queue.DeadLetterName, ""), id).Result()
+func (d *DeadLetterConsumer) acknowledgeAndWarn(ctx context.Context, id string) error {
+	_, err := d.client.XDel(ctx, buildDeadLetterQueueKey(d.queue.DeadLetterName, ""), id).Result()
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to delete message %s", id)
 		return err
